@@ -273,8 +273,9 @@ client.on("messageCreate", async (message) => {
 // ==========================================
 
 if (!TOKEN) {
-    console.error("❌ DISCORD_TOKEN is missing from your .env file.");
+    console.error("❌ DISCORD_TOKEN environment variable is missing.");
     process.exit(1);
 }
 
+console.log("🔐 Discord token detected.");
 client.login(TOKEN);
