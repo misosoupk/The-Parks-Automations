@@ -35,9 +35,6 @@ const EMBED_COLOR = 0x008080;
 // Delete approval and denial replies after 60 seconds
 const RESPONSE_DELETE_TIME = 60 * 1000;
 
-// Reject whitelist requests from accounts with no custom profile picture
-const REQUIRE_CUSTOM_AVATAR = true;
-
 // Message counter
 let messageCount = 0;
 
@@ -72,7 +69,7 @@ function createWhitelistInfoEmbed() {
             `Ready to join the city? Type \`wl\` or \`fwl\` in this channel to request your Whitelist role automatically.\n\n` +
 
             `**Whitelist Requirements**\n` +
-            `Your Discord account must be at least **6 months old** and have a **custom profile picture** to qualify for automatic approval.\n\n` +
+            `Your Discord account must be at least **6 months old**, and you must have a **custom Discord profile picture** to qualify for automatic approval.\n\n` +
 
             `**Exclusive Hotties 💋**\n` +
             `Want access to our **Exclusive Hotties** channels, special perks, sneak peeks, and in-city benefits? Open a ticket in <#${FEMALE_TICKET_CHANNEL_ID}> to get verified!\n\n` +
@@ -147,6 +144,37 @@ client.on("messageCreate", async (message) => {
         if (!member) return;
 
         // ==========================================
+        // CHECK CUSTOM PROFILE PICTURE
+        // ==========================================
+
+        // author.avatar is null when using Discord's default avatar.
+        if (!message.author.avatar) {
+            await message.react(DENIED_EMOJI).catch(() => {
+                return message.react("❎").catch(() => {});
+            });
+
+            const deniedEmbed = createBaseEmbed()
+                .setTitle(`${DENIED_EMOJI} WL Denied`)
+                .setDescription(
+                    `Hey ${member}, you need a **custom Discord profile picture** to receive Whitelist in The Parks.\n\n` +
+                    `Please upload a profile picture and try \`wl\` again!`
+                )
+                .setFooter({
+                    text: "THE PARKS • YOUR CITY, YOUR STORY"
+                });
+
+            const reply = await message.reply({
+                embeds: [deniedEmbed]
+            });
+
+            setTimeout(async () => {
+                await reply.delete().catch(() => {});
+            }, RESPONSE_DELETE_TIME);
+
+            return;
+        }
+
+        // ==========================================
         // CHECK ACCOUNT AGE
         // ==========================================
 
@@ -160,18 +188,15 @@ client.on("messageCreate", async (message) => {
         // ==========================================
 
         if (accountCreated > sixMonthsAgo) {
-            try {
-                await message.react(DENIED_EMOJI);
-            } catch {
-                await message.react("❎").catch(() => {});
-            }
+            await message.react(DENIED_EMOJI).catch(() => {
+                return message.react("❎").catch(() => {});
+            });
 
             const deniedEmbed = createBaseEmbed()
                 .setTitle(`${DENIED_EMOJI} WL Denied`)
                 .setDescription(
-                    `Hey ${member}, you aren't eligible for whitelist yet.\n\n` +
-                    `Your Discord account must be at least **6 months old** to receive the Whitelist role.\n\n` +
-                    `You can try again once your account meets the age requirement.`
+                    `Hey ${member}, you aren't eligible for Whitelist yet.\n\n` +
+                    `Your Discord account must be at least **6 months old** to receive the Whitelist role.`
                 )
                 .setFooter({
                     text: "THE PARKS • YOUR CITY, YOUR STORY"
@@ -182,48 +207,7 @@ client.on("messageCreate", async (message) => {
             });
 
             setTimeout(async () => {
-                try {
-                    await reply.delete();
-                } catch {
-                    console.log("⚠️ Could not delete denied reply.");
-                }
-            }, RESPONSE_DELETE_TIME);
-
-            return;
-        }
-
-        // ==========================================
-        // DENIED: NO CUSTOM AVATAR
-        // ==========================================
-
-        if (REQUIRE_CUSTOM_AVATAR && !message.author.avatar) {
-            try {
-                await message.react(DENIED_EMOJI);
-            } catch {
-                await message.react("❎").catch(() => {});
-            }
-
-            const deniedEmbed = createBaseEmbed()
-                .setTitle(`${DENIED_EMOJI} WL Denied`)
-                .setDescription(
-                    `Hey ${member}, you aren't eligible for whitelist yet.\n\n` +
-                    `Your Discord account needs a **custom profile picture** to receive the Whitelist role.\n\n` +
-                    `Add an avatar to your Discord profile, then type \`wl\` again.`
-                )
-                .setFooter({
-                    text: "THE PARKS • YOUR CITY, YOUR STORY"
-                });
-
-            const reply = await message.reply({
-                embeds: [deniedEmbed]
-            });
-
-            setTimeout(async () => {
-                try {
-                    await reply.delete();
-                } catch {
-                    console.log("⚠️ Could not delete denied reply.");
-                }
+                await reply.delete().catch(() => {});
             }, RESPONSE_DELETE_TIME);
 
             return;
@@ -282,12 +266,9 @@ client.on("messageCreate", async (message) => {
         // REACT TO WL MESSAGE
         // ==========================================
 
-        try {
-            await message.react(APPROVED_EMOJI);
-        } catch {
-            console.log("⚠️ Could not use the custom approval emoji.");
-            await message.react("✅").catch(() => {});
-        }
+        await message.react(APPROVED_EMOJI).catch(() => {
+            return message.react("✅").catch(() => {});
+        });
 
         // ==========================================
         // APPROVED REPLY
@@ -309,11 +290,7 @@ client.on("messageCreate", async (message) => {
         });
 
         setTimeout(async () => {
-            try {
-                await reply.delete();
-            } catch {
-                console.log("⚠️ Could not delete approval reply.");
-            }
+            await reply.delete().catch(() => {});
         }, RESPONSE_DELETE_TIME);
 
         console.log(
