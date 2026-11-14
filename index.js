@@ -32,7 +32,7 @@ const PARKS_EMOJI = "<:emoji_1:1546574965363703958>";
 // Teal embed color
 const EMBED_COLOR = 0x008080;
 
-// Delete approval and denial replies after 60 seconds
+// Delete replies after 60 seconds
 const RESPONSE_DELETE_TIME = 60 * 1000;
 
 // Message counter
@@ -66,10 +66,10 @@ function createWhitelistInfoEmbed() {
         .setTitle(`${PARKS_EMOJI} Requesting WL?`)
         .setDescription(
             `Welcome to **The Parks!** 🌴\n` +
-            `Ready to join the city? Type \`wl\` or \`fwl\` in this channel to request your Whitelist role automatically.\n\n` +
+            `Ready to join the city? Type \`wl\` or \`fwl\` in this channel to automatically receive your Whitelist role!\n\n` +
 
             `**Whitelist Requirements**\n` +
-            `Your Discord account must be at least **6 months old**, and you must have a **custom Discord profile picture** to qualify for automatic approval.\n\n` +
+            `WL is currently OPEN TO EVERYONE! 💚 No Discord account age or profile picture requirements. Everyone is welcome!\n\n` +
 
             `**Exclusive Hotties 💋**\n` +
             `Want access to our **Exclusive Hotties** channels, special perks, sneak peeks, and in-city benefits? Open a ticket in <#${FEMALE_TICKET_CHANNEL_ID}> to get verified!\n\n` +
@@ -78,8 +78,7 @@ function createWhitelistInfoEmbed() {
             `Keep an eye on our [announcements](https://discord.com/channels/${SERVER_ID}/${ANNOUNCEMENTS_CHANNEL_ID}) and [teasers](https://discord.com/channels/${SERVER_ID}/${TEASERS_CHANNEL_ID}) so you don't miss what's coming to The Parks!\n\n` +
 
             `**Whitelist Status**\n` +
-            `${APPROVED_EMOJI} = Approved: Your account meets the requirements and receives the Whitelist role.\n` +
-            `${DENIED_EMOJI} = Denied: Your account doesn't meet the eligibility requirements.`
+            `${APPROVED_EMOJI} = Approved: You've received the Whitelist role!`
         )
         .setFooter({
             text: "THE PARKS • YOUR CITY, YOUR STORY"
@@ -142,76 +141,6 @@ client.on("messageCreate", async (message) => {
 
         const member = message.member;
         if (!member) return;
-
-        // ==========================================
-        // CHECK CUSTOM PROFILE PICTURE
-        // ==========================================
-
-        // author.avatar is null when using Discord's default avatar.
-        if (!message.author.avatar) {
-            await message.react(DENIED_EMOJI).catch(() => {
-                return message.react("❎").catch(() => {});
-            });
-
-            const deniedEmbed = createBaseEmbed()
-                .setTitle(`${DENIED_EMOJI} WL Denied`)
-                .setDescription(
-                    `Hey ${member}, you need a **custom Discord profile picture** to receive Whitelist in The Parks.\n\n` +
-                    `Please upload a profile picture and try \`wl\` again!`
-                )
-                .setFooter({
-                    text: "THE PARKS • YOUR CITY, YOUR STORY"
-                });
-
-            const reply = await message.reply({
-                embeds: [deniedEmbed]
-            });
-
-            setTimeout(async () => {
-                await reply.delete().catch(() => {});
-            }, RESPONSE_DELETE_TIME);
-
-            return;
-        }
-
-        // ==========================================
-        // CHECK ACCOUNT AGE
-        // ==========================================
-
-        const sixMonthsAgo = new Date();
-        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-
-        const accountCreated = message.author.createdAt;
-
-        // ==========================================
-        // DENIED: ACCOUNT UNDER 6 MONTHS
-        // ==========================================
-
-        if (accountCreated > sixMonthsAgo) {
-            await message.react(DENIED_EMOJI).catch(() => {
-                return message.react("❎").catch(() => {});
-            });
-
-            const deniedEmbed = createBaseEmbed()
-                .setTitle(`${DENIED_EMOJI} WL Denied`)
-                .setDescription(
-                    `Hey ${member}, you aren't eligible for Whitelist yet.\n\n` +
-                    `Your Discord account must be at least **6 months old** to receive the Whitelist role.`
-                )
-                .setFooter({
-                    text: "THE PARKS • YOUR CITY, YOUR STORY"
-                });
-
-            const reply = await message.reply({
-                embeds: [deniedEmbed]
-            });
-
-            setTimeout(async () => {
-                await reply.delete().catch(() => {});
-            }, RESPONSE_DELETE_TIME);
-
-            return;
-        }
 
         // ==========================================
         // FIND WHITELIST ROLE
@@ -278,8 +207,8 @@ client.on("messageCreate", async (message) => {
             .setTitle(`${APPROVED_EMOJI} WL Approved!`)
             .setDescription(
                 `Congratulations ${member}! 🌴\n\n` +
-                `Your account meets the requirements, and you've been automatically **Whitelisted** for **The Parks**.\n\n` +
-                `Welcome to the city!`
+                `You've been automatically **Whitelisted** for **The Parks**!\n\n` +
+                `Welcome to the city! 💚`
             )
             .setFooter({
                 text: "THE PARKS • YOUR CITY, YOUR STORY"
@@ -289,6 +218,7 @@ client.on("messageCreate", async (message) => {
             embeds: [approvedEmbed]
         });
 
+        // Delete approval reply after 60 seconds
         setTimeout(async () => {
             await reply.delete().catch(() => {});
         }, RESPONSE_DELETE_TIME);
