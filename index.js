@@ -5,11 +5,22 @@ const {
     Client,
     GatewayIntentBits,
     EmbedBuilder,
-    PermissionsBitField
+    PermissionsBitField,
+    REST,
+    Routes,
+    SlashCommandBuilder,
+    ActionRowBuilder,
+    ButtonBuilder,
+    ButtonStyle,
+    Events
 } = require("discord.js");
 
+const Database = require("better-sqlite3");
+const fs = require("node:fs");
+const path = require("node:path");
+
 // ==========================================
-// THE PARKS CONFIG
+// THE PARKS CONFIGURATION
 // ==========================================
 
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -17,26 +28,87 @@ const TOKEN = process.env.DISCORD_TOKEN;
 const SERVER_ID = "1544087768853127301";
 const WL_ROLE_ID = "1544087768865443859";
 const WL_CHANNEL_ID = "1544087770836897902";
-const FEMALE_TICKET_CHANNEL_ID = "1544087773361868805";
-const ANNOUNCEMENTS_CHANNEL_ID = "1544106344053874939";
-const TEASERS_CHANNEL_ID = "1544087770836897905";
+const REVIEW_CHANNEL_ID = "1572566250733838377";
 
 const SERVER_LOGO_URL =
     "https://cdn.discordapp.com/attachments/1544087774741663811/1565226599476105236/theparks.png";
 
-// Custom emojis
 const APPROVED_EMOJI = "<a:1814tealzverify:1565228130447138906>";
 const DENIED_EMOJI = "<:x_:1565228132514930849>";
 const PARKS_EMOJI = "<:emoji_1:1546574965363703958>";
+const PENDING_EMOJI = "🔄";
 
-// Teal embed color
 const EMBED_COLOR = 0x008080;
+const MAX_VOUCHES = 5;
+const MESSAGE_EMBED_INTERVAL = 8;
 
-// Delete replies after 60 seconds
-const RESPONSE_DELETE_TIME = 60 * 1000;
+const VOUCH_ROLES = [
+    "1544087768890736708", // Influencer
+    "1545108914994155662", // Streamer
+    "1544087768890736707", // Content Creator
+    "1571294084168028381", // Donator
+    "1544087768890736700", // Hotties
+    "1544087768953786532"  // Parks Staff
+];
 
-// Message counter
+const PARKS_STAFF_ROLE_ID = "1544087768953786532";
+
 let messageCount = 0;
+
+// ==========================================
+// DATABASE
+// ==========================================
+
+const DATA_DIRECTORY = process.env.RAILWAY_ENVIRONMENT
+    ? "/data"
+    : path.join(__dirname, "data");
+
+fs.mkdirSync(DATA_DIRECTORY, { recursive: true });
+
+const db = new Database(
+    path.join(DATA_DIRECTORY, "theparks-vouches.sqlite")
+);
+
+db.pragma("journal_mode = WAL");
+
+db.exec(`
+    CREATE TABLE IF NOT EXISTS vouchers (
+        user_id TEXT PRIMARY KEY,
+        used_count INTEGER DEFAULT 0,
+        blacklisted INTEGER DEFAULT 0,
+        blacklist_reason TEXT,
+        blacklisted_by TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS vouches (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        voucher_id TEXT NOT NULL,
+        target_id TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        reviewer_id TEXT,
+        reviewed_at TEXT
+    );
+`);
+
+const getVoucher = db.prepare(
+    "SELECT * FROM vouchers WHERE user_id = ?"
+);
+
+const createVoucher = db.prepare(`
+    INSERT OR IGNORE INTO vouchers (user_id)
+    VALUES (?)
+`);
+
+const getVouch = db.prepare(
+    "SELECT * FROM vouches WHERE id = ?"
+);
+
+const getHistory = db.prepare(`
+    SELECT * FROM vouches
+    ORDER BY id DESC
+    LIMIT ? OFFSET ?
+`);
 
 // ==========================================
 // DISCORD CLIENT
@@ -55,180 +127,644 @@ const client = new Client({
 // EMBED HELPERS
 // ==========================================
 
-function createBaseEmbed() {
+function baseEmbed() {
     return new EmbedBuilder()
         .setColor(EMBED_COLOR)
-        .setThumbnail(SERVER_LOGO_URL);
-}
-
-function createWhitelistInfoEmbed() {
-    return createBaseEmbed()
-        .setTitle(`${PARKS_EMOJI} Requesting WL?`)
-        .setDescription(
-            `Welcome to **The Parks!** 🌴\n` +
-            `Ready to join the city? Type \`wl\` or \`fwl\` in this channel to automatically receive your Whitelist role!\n\n` +
-
-            `**Whitelist Requirements**\n` +
-            `WL is currently OPEN TO EVERYONE! 💚 No Discord account age or profile picture requirements. Everyone is welcome!\n\n` +
-
-            `**Exclusive Hotties 💋**\n` +
-            `Want access to our **Exclusive Hotties** channels, special perks, sneak peeks, and in-city benefits? Open a ticket in <#${FEMALE_TICKET_CHANNEL_ID}> to get verified!\n\n` +
-
-            `**Stay in the Loop! 👀**\n` +
-            `Keep an eye on our [announcements](https://discord.com/channels/${SERVER_ID}/${ANNOUNCEMENTS_CHANNEL_ID}) and [teasers](https://discord.com/channels/${SERVER_ID}/${TEASERS_CHANNEL_ID}) so you don't miss what's coming to The Parks!\n\n` +
-
-            `**Whitelist Status**\n` +
-            `${APPROVED_EMOJI} = Approved: You've received the Whitelist role!`
-        )
+        .setThumbnail(SERVER_LOGO_URL)
         .setFooter({
             text: "THE PARKS • YOUR CITY, YOUR STORY"
         });
+}
+
+function closedWhitelistEmbed() {
+    return baseEmbed()
+        .setTitle(`${PARKS_EMOJI} THE PARKS • WHITELIST`)
+        .setDescription(
+            `**WHITELIST IS CLOSED TO THE PUBLIC** 🌴\n\n` +
+            `Want to join The Parks? You'll need to be vouched for by an authorized member.\n\n` +
+
+            `**Who Can Vouch?**\n` +
+            `• <@&1544087768890736708> — Influencer\n` +
+            `• <@&1545108914994155662> — Streamer\n` +
+            `• <@&1544087768890736707> — Content Creator\n` +
+            `• <@&1571294084168028381> — Donator\n` +
+            `• <@&1544087768890736700> — Hotties\n` +
+            `• <@&1544087768953786532> — Parks Staff\n\n` +
+
+            `**Whitelist Requirements**\n` +
+            `• Your Discord account must be at least **6 months old**.\n` +
+            `• You must receive a vouch from an authorized member.\n` +
+            `• Your request must be approved by Parks Staff.\n\n` +
+
+            `**How To Get Vouched**\n` +
+            `Ask an eligible member to type:\n` +
+            `\`vouch @username\`\n\n` +
+
+            `**Vouch Status**\n` +
+            `${APPROVED_EMOJI} = Approved\n` +
+            `${PENDING_EMOJI} = Pending Staff Review\n` +
+            `${DENIED_EMOJI} = Denied`
+        );
+}
+
+function isStaff(member) {
+    return member.roles.cache.has(PARKS_STAFF_ROLE_ID);
+}
+
+function canVouch(member) {
+    return VOUCH_ROLES.some(role =>
+        member.roles.cache.has(role)
+    );
+}
+
+function isEligible(user) {
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+
+    const oldEnough = user.createdAt <= sixMonthsAgo;
+    const hasPicture = Boolean(user.avatar);
+
+    return {
+        eligible: oldEnough && hasPicture,
+        oldEnough,
+        hasPicture
+    };
+}
+
+// ==========================================
+// SLASH COMMANDS
+// ==========================================
+
+const commands = [
+    new SlashCommandBuilder()
+        .setName("resetvouches")
+        .setDescription("Reset everyone's five-vouch allowance."),
+
+    new SlashCommandBuilder()
+        .setName("blacklistvoucher")
+        .setDescription("Blacklist a member from submitting vouches.")
+        .addUserOption(option =>
+            option.setName("member")
+                .setDescription("Member to blacklist")
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName("reason")
+                .setDescription("Reason for blacklist")
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("unblacklistvoucher")
+        .setDescription("Remove a member's vouch blacklist.")
+        .addUserOption(option =>
+            option.setName("member")
+                .setDescription("Member to unblacklist")
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName("vouchhistory")
+        .setDescription("View the complete vouch history.")
+        .addIntegerOption(option =>
+            option.setName("page")
+                .setDescription("History page, 10 records per page")
+                .setMinValue(1)
+                .setRequired(false))
+].map(command => command.toJSON());
+
+// ==========================================
+// REGISTER SLASH COMMANDS
+// ==========================================
+
+async function registerCommands() {
+    const rest = new REST({ version: "10" }).setToken(TOKEN);
+
+    await rest.put(
+        Routes.applicationGuildCommands(client.user.id, SERVER_ID),
+        { body: commands }
+    );
+
+    console.log("✅ The Parks slash commands registered.");
 }
 
 // ==========================================
 // BOT READY
 // ==========================================
 
-client.once("clientReady", () => {
-    console.log(`✅ ${client.user.tag} is online!`);
-    console.log(`🌴 Server: The Parks (${SERVER_ID})`);
-    console.log(`🎖️ WL Role ID: ${WL_ROLE_ID}`);
-    console.log(`📢 WL Channel ID: ${WL_CHANNEL_ID}`);
+client.once(Events.ClientReady, async () => {
+    console.log(`🌴 ${client.user.tag} is online!`);
+    console.log("💚 The Parks Vouch System is running.");
+
+    try {
+        await registerCommands();
+    } catch (error) {
+        console.error("❌ Slash command registration failed:", error);
+    }
 });
 
 // ==========================================
 // MESSAGE HANDLER
 // ==========================================
 
-client.on("messageCreate", async (message) => {
+client.on(Events.MessageCreate, async message => {
     try {
-        // Ignore bots
         if (message.author.bot) return;
-
-        // Only work in The Parks server
         if (!message.guild || message.guild.id !== SERVER_ID) return;
 
-        // ==========================================
-        // COUNT MESSAGES
-        // ==========================================
+        // ======================================
+        // POST WL EMBED EVERY 8 NON-BOT MESSAGES
+        // ======================================
 
         messageCount++;
 
-        // Post WL embed every 10 non-bot messages
-        if (messageCount >= 10) {
+        if (messageCount >= MESSAGE_EMBED_INTERVAL) {
             messageCount = 0;
 
-            const wlChannel =
-                message.guild.channels.cache.get(WL_CHANNEL_ID);
+            const wlChannel = await client.channels.fetch(WL_CHANNEL_ID)
+                .catch(() => null);
 
             if (wlChannel && wlChannel.isTextBased()) {
                 await wlChannel.send({
-                    embeds: [createWhitelistInfoEmbed()]
+                    embeds: [closedWhitelistEmbed()]
                 });
+                console.log("🌴 WL information embed posted.");
             } else {
                 console.error("❌ WL channel could not be found.");
             }
         }
 
-        // ==========================================
-        // WL / FWL COMMAND
-        // ==========================================
+        // ======================================
+        // VOUCH COMMAND
+        // ======================================
 
-        const command = message.content.trim().toLowerCase();
+        if (!/^vouch\s+/i.test(message.content.trim())) return;
 
-        if (command !== "wl" && command !== "fwl") return;
-        if (message.channel.id !== WL_CHANNEL_ID) return;
+        const voucher = message.member;
+        const target = message.mentions.members.first();
 
-        const member = message.member;
-        if (!member) return;
-
-        // ==========================================
-        // FIND WHITELIST ROLE
-        // ==========================================
-
-        const wlRole = message.guild.roles.cache.get(WL_ROLE_ID);
-
-        if (!wlRole) {
-            console.error("❌ WL role not found. Check WL_ROLE_ID.");
-            await message.react("❎").catch(() => {});
-            return;
-        }
-
-        // ==========================================
-        // CHECK BOT PERMISSIONS
-        // ==========================================
-
-        const botMember = message.guild.members.me;
-
-        if (
-            !botMember ||
-            !botMember.permissions.has(
-                PermissionsBitField.Flags.ManageRoles
-            )
-        ) {
-            console.error("❌ Bot needs Manage Roles permission.");
-            await message.react("❎").catch(() => {});
-            return;
-        }
-
-        // ==========================================
-        // CHECK ROLE HIERARCHY
-        // ==========================================
-
-        if (wlRole.position >= botMember.roles.highest.position) {
-            console.error(
-                "❌ Move the bot's highest role above the Whitelist role."
+        if (!target) {
+            return message.reply(
+                "Please mention the member you want to vouch for. Example: `vouch @username`"
             );
-            await message.react("❎").catch(() => {});
-            return;
         }
 
-        // ==========================================
-        // GIVE WHITELIST ROLE
-        // ==========================================
-
-        if (!member.roles.cache.has(WL_ROLE_ID)) {
-            await member.roles.add(wlRole);
+        if (message.mentions.members.size !== 1) {
+            return message.reply("Please vouch for only one member at a time.");
         }
 
-        // ==========================================
-        // REACT TO WL MESSAGE
-        // ==========================================
+        if (target.id === voucher.id) {
+            return message.reply("You cannot vouch for yourself.");
+        }
 
-        await message.react(APPROVED_EMOJI).catch(() => {
-            return message.react("✅").catch(() => {});
+        if (target.user.bot) {
+            return message.reply("You cannot vouch for a bot.");
+        }
+
+        if (!canVouch(voucher)) {
+            return message.reply(
+                `${DENIED_EMOJI} You don't have an authorized vouching role.`
+            );
+        }
+
+        createVoucher.run(voucher.id);
+        const voucherData = getVoucher.get(voucher.id);
+
+        if (voucherData.blacklisted) {
+            return message.reply(
+                `${DENIED_EMOJI} You are blacklisted from submitting vouches.`
+            );
+        }
+
+        if (voucherData.used_count >= MAX_VOUCHES) {
+            return message.reply(
+                `${DENIED_EMOJI} You have used all 5 of your vouches.`
+            );
+        }
+
+        if (target.roles.cache.has(WL_ROLE_ID)) {
+            return message.reply("This member is already Whitelisted.");
+        }
+
+        const eligibility = isEligible(target.user);
+
+        if (!eligibility.eligible) {
+            const reasons = [];
+
+            if (!eligibility.oldEnough) {
+                reasons.push("Your Discord account must be at least 6 months old.");
+            }
+
+            if (!eligibility.hasPicture) {
+                reasons.push("You must have a custom Discord profile picture.");
+            }
+
+            await message.react(DENIED_EMOJI).catch(() => {});
+
+            return message.reply(
+                `${DENIED_EMOJI} This member isn't eligible for a vouch.\n\n` +
+                reasons.join("\n")
+            );
+        }
+
+        const existingPending = db.prepare(`
+            SELECT id FROM vouches
+            WHERE target_id = ? AND status = 'pending'
+        `).get(target.id);
+
+        if (existingPending) {
+            return message.reply(
+                `${PENDING_EMOJI} This member already has a pending vouch request.`
+            );
+        }
+
+        const reviewChannel = await client.channels.fetch(REVIEW_CHANNEL_ID)
+            .catch(() => null);
+
+        if (!reviewChannel || !reviewChannel.isTextBased()) {
+            return message.reply(
+                "The staff review channel could not be found. Please contact Parks Staff."
+            );
+        }
+
+        // Create request and use one vouch slot.
+        const transaction = db.transaction(() => {
+            const result = db.prepare(`
+                INSERT INTO vouches
+                (voucher_id, target_id, status, created_at)
+                VALUES (?, ?, 'pending', ?)
+            `).run(
+                voucher.id,
+                target.id,
+                new Date().toISOString()
+            );
+
+            db.prepare(`
+                UPDATE vouchers
+                SET used_count = used_count + 1
+                WHERE user_id = ?
+            `).run(voucher.id);
+
+            return Number(result.lastInsertRowid);
         });
 
-        // ==========================================
-        // APPROVED REPLY
-        // ==========================================
+        const vouchId = transaction();
 
-        const approvedEmbed = createBaseEmbed()
-            .setTitle(`${APPROVED_EMOJI} WL Approved!`)
+        const requestEmbed = baseEmbed()
+            .setTitle(`${PENDING_EMOJI} New Whitelist Vouch`)
             .setDescription(
-                `Congratulations ${member}! 🌴\n\n` +
-                `You've been automatically **Whitelisted** for **The Parks**!\n\n` +
-                `Welcome to the city! 💚`
+                "A new member has been vouched for in **The Parks**."
             )
-            .setFooter({
-                text: "THE PARKS • YOUR CITY, YOUR STORY"
+            .addFields(
+                {
+                    name: "Vouch ID",
+                    value: `#${vouchId}`,
+                    inline: true
+                },
+                {
+                    name: "Voucher",
+                    value: `${voucher.user.tag}\n${voucher}`,
+                    inline: true
+                },
+                {
+                    name: "Member Vouched For",
+                    value: `${target.user.tag}\n${target}`,
+                    inline: true
+                },
+                {
+                    name: "Account Age Requirement",
+                    value: "✅ Passed — 6 months or older"
+                },
+                {
+                    name: "Profile Picture Check",
+                    value: "✅ Custom profile picture detected"
+                },
+                {
+                    name: "Vouch Status",
+                    value: `${PENDING_EMOJI} Pending Staff Review`
+                }
+            )
+            .setTimestamp();
+
+        const buttons = new ActionRowBuilder().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`vouch_approve_${vouchId}`)
+                .setLabel("Approve")
+                .setStyle(ButtonStyle.Success),
+
+            new ButtonBuilder()
+                .setCustomId(`vouch_deny_${vouchId}`)
+                .setLabel("Deny")
+                .setStyle(ButtonStyle.Danger)
+        );
+
+        try {
+            await reviewChannel.send({
+                embeds: [requestEmbed],
+                components: [buttons]
             });
+        } catch (error) {
+            // Refund the vouch slot if the review request cannot be delivered.
+            db.prepare("DELETE FROM vouches WHERE id = ?").run(vouchId);
+            db.prepare(`
+                UPDATE vouchers
+                SET used_count = MAX(0, used_count - 1)
+                WHERE user_id = ?
+            `).run(voucher.id);
 
-        const reply = await message.reply({
-            embeds: [approvedEmbed]
+            throw error;
+        }
+
+        await message.react(PENDING_EMOJI).catch(() => {});
+
+        const used = voucherData.used_count + 1;
+        const remaining = MAX_VOUCHES - used;
+
+        await message.reply(
+            `${PENDING_EMOJI} Your vouch for ${target} has been submitted!\n` +
+            `You have **${remaining}/5** vouches remaining.`
+        );
+
+        await voucher.send(
+            `${PENDING_EMOJI} You have vouched for **${target.user.tag}** in The Parks.\n` +
+            `Your request is now waiting for Parks Staff to review.\n` +
+            `Vouches used: **${used}/5**.`
+        ).catch(() => {
+            console.log(`Could not DM voucher ${voucher.user.tag}.`);
         });
-
-        // Delete approval reply after 60 seconds
-        setTimeout(async () => {
-            await reply.delete().catch(() => {});
-        }, RESPONSE_DELETE_TIME);
 
         console.log(
-            `✅ ${message.author.tag} was whitelisted in The Parks.`
+            `🌴 Vouch #${vouchId}: ${voucher.user.tag} -> ${target.user.tag}`
         );
 
     } catch (error) {
         console.error("❌ Message handler error:", error);
+    }
+});
+
+// ==========================================
+// BUTTONS AND SLASH COMMANDS
+// ==========================================
+
+client.on(Events.InteractionCreate, async interaction => {
+    try {
+        if (!interaction.guild || interaction.guild.id !== SERVER_ID) return;
+
+        // ======================================
+        // APPROVE / DENY BUTTONS
+        // ======================================
+
+        if (interaction.isButton()) {
+            const parts = interaction.customId.split("_");
+
+            if (parts[0] !== "vouch") return;
+
+            if (!isStaff(interaction.member)) {
+                return interaction.reply({
+                    content: "❌ Only Parks Staff can review vouches.",
+                    ephemeral: true
+                });
+            }
+
+            const action = parts[1];
+            const vouchId = Number(parts[2]);
+            const record = getVouch.get(vouchId);
+
+            if (!record || record.status !== "pending") {
+                return interaction.reply({
+                    content: "This vouch has already been reviewed or does not exist.",
+                    ephemeral: true
+                });
+            }
+
+            if (action === "approve") {
+                const target = await interaction.guild.members.fetch(
+                    record.target_id
+                ).catch(() => null);
+
+                if (!target) {
+                    return interaction.reply({
+                        content: "This member is no longer in the server.",
+                        ephemeral: true
+                    });
+                }
+
+                if (!isEligible(target.user).eligible) {
+                    return interaction.reply({
+                        content: "This member no longer meets the account age and profile picture requirements.",
+                        ephemeral: true
+                    });
+                }
+
+                const wlRole = interaction.guild.roles.cache.get(WL_ROLE_ID);
+                const botMember = interaction.guild.members.me;
+
+                if (
+                    !wlRole ||
+                    !botMember ||
+                    !botMember.permissions.has(PermissionsBitField.Flags.ManageRoles) ||
+                    wlRole.position >= botMember.roles.highest.position
+                ) {
+                    return interaction.reply({
+                        content: "The bot cannot assign the Whitelist role. Check Manage Roles and role hierarchy.",
+                        ephemeral: true
+                    });
+                }
+
+                await target.roles.add(wlRole);
+
+                db.prepare(`
+                    UPDATE vouches
+                    SET status = 'approved',
+                        reviewer_id = ?,
+                        reviewed_at = ?
+                    WHERE id = ? AND status = 'pending'
+                `).run(
+                    interaction.user.id,
+                    new Date().toISOString(),
+                    vouchId
+                );
+
+                const approvedEmbed = EmbedBuilder.from(
+                    interaction.message.embeds[0]
+                )
+                    .setColor(0x20A66A)
+                    .setTitle(`${APPROVED_EMOJI} Vouch Approved`)
+                    .addFields({
+                        name: "Review Result",
+                        value: `Approved by ${interaction.user}`
+                    });
+
+                await interaction.update({
+                    embeds: [approvedEmbed],
+                    components: []
+                });
+
+                await target.send(
+                    `${APPROVED_EMOJI} Congratulations! You've been **Whitelisted** in **The Parks**! 🌴\n\n` +
+                    `Your vouch was approved by Parks Staff. Welcome to the city! 💚`
+                ).catch(() => {
+                    console.log(`Could not DM approved member ${target.user.tag}.`);
+                });
+
+                console.log(`✅ Vouch #${vouchId} approved.`);
+
+            } else if (action === "deny") {
+                db.prepare(`
+                    UPDATE vouches
+                    SET status = 'denied',
+                        reviewer_id = ?,
+                        reviewed_at = ?
+                    WHERE id = ? AND status = 'pending'
+                `).run(
+                    interaction.user.id,
+                    new Date().toISOString(),
+                    vouchId
+                );
+
+                const deniedEmbed = EmbedBuilder.from(
+                    interaction.message.embeds[0]
+                )
+                    .setColor(0xD64040)
+                    .setTitle(`${DENIED_EMOJI} Vouch Denied`)
+                    .addFields({
+                        name: "Review Result",
+                        value: `Denied by ${interaction.user}`
+                    });
+
+                await interaction.update({
+                    embeds: [deniedEmbed],
+                    components: []
+                });
+
+                console.log(`❌ Vouch #${vouchId} denied.`);
+            }
+
+            return;
+        }
+
+        // ======================================
+        // SLASH COMMANDS
+        // ======================================
+
+        if (!interaction.isChatInputCommand()) return;
+
+        if (!isStaff(interaction.member)) {
+            return interaction.reply({
+                content: "❌ Only Parks Staff can use this command.",
+                ephemeral: true
+            });
+        }
+
+        if (interaction.commandName === "resetvouches") {
+            db.prepare(`
+                UPDATE vouchers SET used_count = 0
+            `).run();
+
+            return interaction.reply({
+                content: "✅ Everyone's vouch allowance has been reset to **5 available vouches**. Previous history and blacklists were preserved.",
+                ephemeral: true
+            });
+        }
+
+        if (interaction.commandName === "blacklistvoucher") {
+            const user = interaction.options.getUser("member");
+            const reason = interaction.options.getString("reason");
+
+            createVoucher.run(user.id);
+
+            db.prepare(`
+                UPDATE vouchers
+                SET blacklisted = 1,
+                    blacklist_reason = ?,
+                    blacklisted_by = ?
+                WHERE user_id = ?
+            `).run(reason, interaction.user.id, user.id);
+
+            return interaction.reply({
+                content: `🚫 **${user.tag}** has been blacklisted from vouching.\nReason: ${reason}`,
+                ephemeral: true
+            });
+        }
+
+        if (interaction.commandName === "unblacklistvoucher") {
+            const user = interaction.options.getUser("member");
+
+            createVoucher.run(user.id);
+
+            db.prepare(`
+                UPDATE vouchers
+                SET blacklisted = 0,
+                    blacklist_reason = NULL,
+                    blacklisted_by = NULL
+                WHERE user_id = ?
+            `).run(user.id);
+
+            return interaction.reply({
+                content: `✅ **${user.tag}** has been removed from the vouch blacklist.`,
+                ephemeral: true
+            });
+        }
+
+        if (interaction.commandName === "vouchhistory") {
+            const page = interaction.options.getInteger("page") || 1;
+            const offset = (page - 1) * 10;
+
+            const records = getHistory.all(10, offset);
+
+            const total = db.prepare(
+                "SELECT COUNT(*) AS total FROM vouches"
+            ).get().total;
+
+            const totalPages = Math.max(1, Math.ceil(total / 10));
+
+            if (page > totalPages) {
+                return interaction.reply({
+                    content: `There are only ${totalPages} history pages.`,
+                    ephemeral: true
+                });
+            }
+
+            const historyEmbed = baseEmbed()
+                .setTitle(`📜 The Parks Vouch History — Page ${page}/${totalPages}`)
+                .setDescription(
+                    records.length
+                        ? records.map(record => {
+                            const status =
+                                record.status === "approved" ? APPROVED_EMOJI :
+                                record.status === "denied" ? DENIED_EMOJI :
+                                PENDING_EMOJI;
+
+                            return (
+                                `**Vouch #${record.id}** ${status}\n` +
+                                `Voucher: <@${record.voucher_id}>\n` +
+                                `Member: <@${record.target_id}>\n` +
+                                `Submitted: <t:${Math.floor(new Date(record.created_at).getTime() / 1000)}:f>\n` +
+                                `Reviewed by: ${record.reviewer_id ? `<@${record.reviewer_id}>` : "Not reviewed"}`
+                            );
+                        }).join("\n\n")
+                        : "No vouches have been submitted yet."
+                )
+                .setFooter({
+                    text: `Total recorded vouches: ${total} • Use /vouchhistory page:<number>`
+                });
+
+            return interaction.reply({
+                embeds: [historyEmbed],
+                ephemeral: true
+            });
+        }
+
+    } catch (error) {
+        console.error("❌ Interaction error:", error);
+
+        if (
+            interaction.isRepliable() &&
+            !interaction.replied &&
+            !interaction.deferred
+        ) {
+            await interaction.reply({
+                content: "Something went wrong. Please check the bot logs.",
+                ephemeral: true
+            }).catch(() => {});
+        }
     }
 });
 
