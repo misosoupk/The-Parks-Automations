@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const {
@@ -47,7 +46,7 @@ const VOUCH_ROLES = [
     "1545108914994155662", // Streamer
     "1544087768890736707", // Content Creator
     "1571294084168028381", // Donator
-    "1544087768890736700", // Hotties
+    "1544087768894155660", // Hotties
     "1544087768953786532"  // Parks Staff
 ];
 
@@ -87,9 +86,20 @@ db.exec(`
         status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL,
         reviewer_id TEXT,
-        reviewed_at TEXT
+        reviewed_at TEXT,
+        source_channel_id TEXT,
+        source_message_id TEXT
     );
 `);
+
+// Safely add these columns to databases created by older versions of the bot.
+const vouchColumns = db.prepare("PRAGMA table_info(vouches)").all().map(column => column.name);
+if (!vouchColumns.includes("source_channel_id")) {
+    db.exec("ALTER TABLE vouches ADD COLUMN source_channel_id TEXT");
+}
+if (!vouchColumns.includes("source_message_id")) {
+    db.exec("ALTER TABLE vouches ADD COLUMN source_message_id TEXT");
+}
 
 const getVoucher = db.prepare(
     "SELECT * FROM vouchers WHERE user_id = ?"
@@ -175,6 +185,29 @@ function canVouch(member) {
     return VOUCH_ROLES.some(role =>
         member.roles.cache.has(role)
     );
+}
+
+async function replaceVouchReaction(channelId, messageId, newEmoji) {
+    if (!channelId || !messageId) return;
+
+    try {
+        const channel = await client.channels.fetch(channelId);
+        if (!channel || !channel.isTextBased() || !channel.messages) return;
+
+        const sourceMessage = await channel.messages.fetch(messageId);
+        const pendingReaction = sourceMessage.reactions.cache.find(
+            reaction => reaction.emoji.name === PENDING_EMOJI
+        );
+
+        // Remove only the bot's own pending reaction, not reactions from members.
+        if (pendingReaction) {
+            await pendingReaction.users.remove(client.user.id).catch(() => {});
+        }
+
+        await sourceMessage.react(newEmoji);
+    } catch (error) {
+        console.error("Could not update the original vouch reaction:", error.message);
+    }
 }
 
 function isEligible(user) {
@@ -388,12 +421,14 @@ client.on(Events.MessageCreate, async message => {
         const transaction = db.transaction(() => {
             const result = db.prepare(`
                 INSERT INTO vouches
-                (voucher_id, target_id, status, created_at)
-                VALUES (?, ?, 'pending', ?)
+                (voucher_id, target_id, status, created_at, source_channel_id, source_message_id)
+                VALUES (?, ?, 'pending', ?, ?, ?)
             `).run(
                 voucher.id,
                 target.id,
-                new Date().toISOString()
+                new Date().toISOString(),
+                message.channel.id,
+                message.id
             );
 
             db.prepare(`
@@ -597,6 +632,12 @@ client.on(Events.InteractionCreate, async interaction => {
                     components: []
                 });
 
+                await replaceVouchReaction(
+                    record.source_channel_id,
+                    record.source_message_id,
+                    APPROVED_EMOJI
+                );
+
                 await target.send(
                     `${APPROVED_EMOJI} Congratulations! You've been **Whitelisted** in **The Parks**! 🌴\n\n` +
                     `Your vouch was approved by Parks Staff. Welcome to the city! 💚`
@@ -607,17 +648,29 @@ client.on(Events.InteractionCreate, async interaction => {
                 console.log(`✅ Vouch #${vouchId} approved.`);
 
             } else if (action === "deny") {
-                db.prepare(`
-                    UPDATE vouches
-                    SET status = 'denied',
-                        reviewer_id = ?,
-                        reviewed_at = ?
-                    WHERE id = ? AND status = 'pending'
-                `).run(
-                    interaction.user.id,
-                    new Date().toISOString(),
-                    vouchId
-                );
+                const denyTransaction = db.transaction(() => {
+                    const update = db.prepare(`
+                        UPDATE vouches
+                        SET status = 'denied',
+                            reviewer_id = ?,
+                            reviewed_at = ?
+                        WHERE id = ? AND status = 'pending'
+                    `).run(
+                        interaction.user.id,
+                        new Date().toISOString(),
+                        vouchId
+                    );
+
+                    // A denied request does not use one of the voucher's five slots.
+                    if (update.changes > 0) {
+                        db.prepare(`
+                            UPDATE vouchers
+                            SET used_count = MAX(0, used_count - 1)
+                            WHERE user_id = ?
+                        `).run(record.voucher_id);
+                    }
+                });
+                denyTransaction();
 
                 const deniedEmbed = EmbedBuilder.from(
                     interaction.message.embeds[0]
@@ -634,7 +687,13 @@ client.on(Events.InteractionCreate, async interaction => {
                     components: []
                 });
 
-                console.log(`❌ Vouch #${vouchId} denied.`);
+                await replaceVouchReaction(
+                    record.source_channel_id,
+                    record.source_message_id,
+                    DENIED_EMOJI
+                );
+
+                console.log(`❌ Vouch #${vouchId} denied; vouch slot refunded.`);
             }
 
             return;
